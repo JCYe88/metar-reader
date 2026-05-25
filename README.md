@@ -70,6 +70,14 @@ python app.py
 
 Then open your browser and go to **http://localhost:5001**.
 
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+65 tests cover the METAR parser, summary generator, and all Flask API endpoints. The test suite uses mocked API responses so no network connection is required.
+
 ## Usage
 
 1. Type an airport code into the search box (e.g. `KSFO`, `KJFK`, `EGLL`, or US shorthand like `SFO`)
@@ -93,6 +101,8 @@ metar-reader/
 ├── requirements.txt     # Python dependencies
 ├── templates/
 │   └── index.html       # Single-page frontend (no external dependencies)
+├── tests/
+│   └── test_app.py      # pytest unit and route tests
 └── venv/                # Virtual environment (not committed)
 ```
 

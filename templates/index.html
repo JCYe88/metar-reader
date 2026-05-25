@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>METAR Reader</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --sky:    #0a1628;
+      --sky2:   #0d2045;
+      --accent: #4fa3e0;
+      --gold:   #f0b429;
+      --green:  #34d399;
+      --red:    #f87171;
+      --text:   #e2e8f0;
+      --muted:  #94a3b8;
+      --card:   rgba(255,255,255,0.06);
+      --border: rgba(255,255,255,0.10);
+      --radius: 14px;
+    }
+
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: linear-gradient(160deg, var(--sky) 0%, var(--sky2) 100%);
+      min-height: 100vh;
+      color: var(--text);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 40px 16px 80px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+    header .plane { font-size: 2.6rem; }
+    header h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+      margin-top: 8px;
+    }
+    header p {
+      color: var(--muted);
+      margin-top: 6px;
+      font-size: 0.95rem;
+    }
+
+    /* Search */
+    .search-box {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      max-width: 520px;
+      margin-bottom: 36px;
+    }
+    .search-box input {
+      flex: 1;
+      padding: 14px 18px;
+      border-radius: var(--radius);
+      border: 1.5px solid var(--border);
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      font-size: 1.05rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .search-box input::placeholder { letter-spacing: 1px; color: var(--muted); text-transform: none; }
+    .search-box input:focus { border-color: var(--accent); }
+    .search-box button {
+      padding: 14px 24px;
+      border-radius: var(--radius);
+      border: none;
+      background: var(--accent);
+      color: #fff;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, transform 0.1s;
+      white-space: nowrap;
+    }
+    .search-box button:hover { background: #3b8fd4; }
+    .search-box button:active { transform: scale(0.97); }
+
+    /* Cards */
+    .results { width: 100%; max-width: 820px; display: flex; flex-direction: column; gap: 20px; }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      backdrop-filter: blur(8px);
+    }
+    .card-title {
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* Summary card */
+    #summary-card .airport-name {
+      font-size: 2rem;
+      font-weight: 700;
+      color: var(--gold);
+      margin-bottom: 10px;
+      letter-spacing: 4px;
+    }
+    #summary-card .summary-text {
+      font-size: 1.15rem;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    /* Weather grid */
+    .weather-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 16px;
+    }
+    .wx-item {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .wx-item .wx-icon { font-size: 1.6rem; margin-bottom: 6px; }
+    .wx-item .wx-label {
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .wx-item .wx-value {
+      font-size: 1.05rem;
+      font-weight: 600;
+      color: var(--text);
+      line-height: 1.4;
+    }
+    .wx-item .wx-sub {
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+
+    /* Sky / weather list */
+    .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .tag {
+      padding: 5px 12px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      background: rgba(79,163,224,0.18);
+      border: 1px solid rgba(79,163,224,0.35);
+      color: var(--accent);
+    }
+    .tag.green { background: rgba(52,211,153,0.15); border-color: rgba(52,211,153,0.3); color: var(--green); }
+    .tag.gold  { background: rgba(240,180,41,0.15);  border-color: rgba(240,180,41,0.3);  color: var(--gold); }
+    .tag.red   { background: rgba(248,113,113,0.15); border-color: rgba(248,113,113,0.3); color: var(--red); }
+
+    /* Raw METAR */
+    .raw-metar {
+      font-family: 'Courier New', monospace;
+      font-size: 0.88rem;
+      color: var(--muted);
+      word-break: break-all;
+      line-height: 1.6;
+      background: rgba(0,0,0,0.25);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+
+    /* Error */
+    #error-card {
+      background: rgba(248,113,113,0.1);
+      border-color: rgba(248,113,113,0.3);
+      color: var(--red);
+      font-size: 1rem;
+      text-align: center;
+    }
+
+    /* Spinner */
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(255,255,255,0.15);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 20px auto;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .hidden { display: none !important; }
+
+    /* Wind compass */
+    .compass-wrap { display: flex; align-items: center; gap: 14px; }
+    .compass {
+      width: 52px; height: 52px;
+      border-radius: 50%;
+      border: 2px solid var(--border);
+      position: relative;
+      flex-shrink: 0;
+    }
+    .compass-arrow {
+      position: absolute;
+      top: 50%; left: 50%;
+      width: 3px; height: 22px;
+      background: var(--accent);
+      border-radius: 2px;
+      transform-origin: bottom center;
+      /* translated so bottom is at center, then rotated */
+      transform: translateX(-50%) translateY(-100%);
+    }
+    .compass-dot {
+      position: absolute;
+      top: 50%; left: 50%;
+      width: 6px; height: 6px;
+      background: var(--accent);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="plane">✈️</div>
+  <h1>METAR Reader</h1>
+  <p>Type an airport code to get a plain-English weather report</p>
+</header>
+
+<div class="search-box">
+  <input id="code-input" type="text" maxlength="4" placeholder="Airport code (e.g. KHIO)" />
+  <button id="search-btn" onclick="fetchMetar()">Get Weather</button>
+</div>
+
+<div class="results hidden" id="results">
+
+  <!-- loading -->
+  <div id="loading" class="hidden"><div class="spinner"></div></div>
+
+  <!-- error -->
+  <div id="error-card" class="card hidden"></div>
+
+  <!-- summary -->
+  <div id="summary-card" class="card hidden">
+    <div class="card-title">Airport</div>
+    <div class="airport-name" id="airport-label"></div>
+    <div class="card-title" style="margin-top:14px;">Weather Summary</div>
+    <div class="summary-text" id="summary-text"></div>
+  </div>
+
+  <!-- detail grid -->
+  <div id="detail-card" class="card hidden">
+    <div class="card-title">Conditions at a Glance</div>
+    <div class="weather-grid" id="wx-grid"></div>
+  </div>
+
+  <!-- sky/clouds -->
+  <div id="sky-card" class="card hidden">
+    <div class="card-title">Sky Conditions</div>
+    <div class="tag-list" id="sky-tags"></div>
+  </div>
+
+  <!-- weather phenomena -->
+  <div id="wx-card" class="card hidden">
+    <div class="card-title">Active Weather</div>
+    <div class="tag-list" id="wx-tags"></div>
+  </div>
+
+  <!-- raw METAR -->
+  <div id="raw-card" class="card hidden">
+    <div class="card-title">Raw METAR</div>
+    <div class="raw-metar" id="raw-text"></div>
+  </div>
+
+</div>
+
+<script>
+  const input = document.getElementById('code-input');
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') fetchMetar(); });
+
+  function show(id)   { document.getElementById(id).classList.remove('hidden'); }
+  function hide(id)   { document.getElementById(id).classList.add('hidden'); }
+  function el(id)     { return document.getElementById(id); }
+  function setText(id, txt) { el(id).textContent = txt; }
+  function setHTML(id, html) { el(id).innerHTML = html; }
+
+  function skyTagColor(code) {
+    if (['SKC','CLR','NSC','CAVOK'].includes(code)) return 'green';
+    if (['FEW','SCT'].includes(code)) return 'gold';
+    if (['BKN','OVC','VV'].includes(code)) return 'red';
+    return '';
+  }
+
+  function renderCompass(degrees) {
+    return `
+      <div class="compass-wrap">
+        <div class="compass">
+          <div class="compass-arrow" style="transform: translateX(-50%) translateY(-100%) rotate(${degrees}deg);"></div>
+          <div class="compass-dot"></div>
+        </div>
+      </div>`;
+  }
+
+  function wxItem(icon, label, value, sub) {
+    return `
+      <div class="wx-item">
+        <div class="wx-icon">${icon}</div>
+        <div class="wx-label">${label}</div>
+        <div class="wx-value">${value}</div>
+        ${sub ? `<div class="wx-sub">${sub}</div>` : ''}
+      </div>`;
+  }
+
+  async function fetchMetar() {
+    const code = input.value.trim().toUpperCase();
+    if (!code) { input.focus(); return; }
+
+    // reset UI
+    show('results');
+    show('loading');
+    ['error-card','summary-card','detail-card','sky-card','wx-card','raw-card'].forEach(hide);
+
+    try {
+      const res = await fetch(`/metar?code=${encodeURIComponent(code)}`);
+      const data = await res.json();
+      hide('loading');
+
+      if (!res.ok) {
+        el('error-card').textContent = data.error || 'An error occurred.';
+        show('error-card');
+        return;
+      }
+
+      const p = data.parsed;
+
+      // Summary
+      setText('airport-label', data.airport);
+      setText('summary-text', data.summary);
+      show('summary-card');
+
+      // Detail grid
+      const gridItems = [];
+
+      if (p.temperature) {
+        const f = p.temperature.fahrenheit, c = p.temperature.celsius;
+        const tempIcon = f >= 85 ? '🌡️' : f >= 60 ? '🌤️' : f >= 32 ? '🧊' : '❄️';
+        gridItems.push(wxItem(tempIcon, 'Temperature', `${f}°F`, `${c}°C`));
+      }
+
+      if (p.dewpoint) {
+        const f = p.dewpoint.fahrenheit, c = p.dewpoint.celsius;
+        gridItems.push(wxItem('💧', 'Dew Point', `${f}°F`, `${c}°C — humidity indicator`));
+      }
+
+      if (p.wind) {
+        if (p.wind.calm) {
+          gridItems.push(wxItem('🍃', 'Wind', 'Calm', ''));
+        } else {
+          const compassHTML = (p.wind.degrees !== undefined)
+            ? renderCompass(p.wind.degrees)
+            : '';
+          gridItems.push(`
+            <div class="wx-item">
+              <div class="wx-icon">💨</div>
+              <div class="wx-label">Wind</div>
+              <div class="wx-value" style="display:flex;align-items:center;gap:10px;">
+                ${compassHTML}
+                <span>${p.wind.description}</span>
+              </div>
+              ${p.wind_variable ? `<div class="wx-sub">Variable: ${p.wind_variable}</div>` : ''}
+            </div>`);
+        }
+      }
+
+      if (p.visibility) {
+        gridItems.push(wxItem('👁️', 'Visibility', p.visibility.description, ''));
+      }
+
+      if (p.altimeter) {
+        const standard = p.altimeter.inHg >= 29.5 && p.altimeter.inHg <= 30.5;
+        const note = standard ? 'Near standard pressure' : p.altimeter.inHg > 30.5 ? 'High pressure' : 'Low pressure';
+        gridItems.push(wxItem('⬇️', 'Altimeter / Pressure', p.altimeter.description, note));
+      }
+
+      if (p.auto) {
+        gridItems.push(wxItem('🤖', 'Station Type', 'Automated', 'No human observer'));
+      }
+
+      el('wx-grid').innerHTML = gridItems.join('');
+      if (gridItems.length) show('detail-card');
+
+      // Sky
+      if (p.sky && p.sky.length) {
+        el('sky-tags').innerHTML = p.sky.map(s =>
+          `<span class="tag ${skyTagColor(s.code)}">${s.description}</span>`
+        ).join('');
+        show('sky-card');
+      }
+
+      // Weather phenomena
+      if (p.weather && p.weather.length) {
+        el('wx-tags').innerHTML = p.weather.map(w =>
+          `<span class="tag red">${w}</span>`
+        ).join('');
+        show('wx-card');
+      }
+
+      // Raw
+      setText('raw-text', data.raw);
+      show('raw-card');
+
+    } catch (err) {
+      hide('loading');
+      el('error-card').textContent = 'Network error — please check your connection and try again.';
+      show('error-card');
+    }
+  }
+</script>
+
+</body>
+</html>

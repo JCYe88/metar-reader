@@ -40,7 +40,7 @@ Live METAR data is fetched from the [Aviation Weather Center API](https://aviati
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-username/metar-reader.git
+git clone https://github.com/JCYe88/metar-reader.git
 cd metar-reader
 ```
 

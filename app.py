@@ -1,9 +1,17 @@
+"""
+METAR Reader — Flask web application.
+
+Fetches live METAR weather reports from aviationweather.gov and decodes
+them from cryptic aviation shorthand into plain English.
+"""
+
 import re
 import requests
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
 
+# 16-point compass rose used to convert wind degrees to a cardinal direction.
 WIND_DIRECTIONS = [
     'North', 'NNE', 'NE', 'ENE',
     'East', 'ESE', 'SE', 'SSE',
@@ -11,12 +19,15 @@ WIND_DIRECTIONS = [
     'West', 'WNW', 'NW', 'NNW',
 ]
 
+# METAR two-letter descriptor codes that modify a weather phenomenon
+# (e.g. "SH" = shower, "TS" = thunderstorm, "FZ" = freezing).
 WEATHER_DESCRIPTORS = {
     'MI': 'shallow', 'BC': 'patchy', 'PR': 'partial',
     'DR': 'drifting', 'BL': 'blowing', 'SH': 'shower',
     'TS': 'thunderstorm', 'FZ': 'freezing',
 }
 
+# METAR two-letter phenomenon codes mapped to plain English.
 WEATHER_PHENOMENA = {
     'DZ': 'drizzle', 'RA': 'rain', 'SN': 'snow',
     'SG': 'snow grains', 'IC': 'ice crystals', 'PL': 'ice pellets',
@@ -26,6 +37,7 @@ WEATHER_PHENOMENA = {
     'SQ': 'squalls', 'FC': 'funnel cloud', 'SS': 'sandstorm', 'DS': 'dust storm',
 }
 
+# Sky condition codes mapped to (short label, plain English description).
 SKY_CONDITIONS = {
     'SKC': ('Clear', 'clear'), 'CLR': ('Clear', 'clear'),
     'NSC': ('Clear', 'no significant clouds'),
@@ -38,19 +50,36 @@ SKY_CONDITIONS = {
 
 
 def degrees_to_cardinal(deg):
+    """Convert a wind direction in degrees (0–360) to a cardinal direction string."""
     return WIND_DIRECTIONS[round(deg / 22.5) % 16]
 
 
 def c_to_f(c):
+    """Convert Celsius to Fahrenheit, rounded to one decimal place."""
     return round(c * 9 / 5 + 32, 1)
 
 
 def parse_temp_token(token):
+    """
+    Parse a METAR temperature token into an integer Celsius value.
+
+    METAR uses 'M' as a minus sign (e.g. 'M05' → -5).
+    """
     return -int(token[1:]) if token.startswith('M') else int(token)
 
 
 def decode_weather_token(token):
-    original = token
+    """
+    Decode a single METAR present-weather token into a plain English phrase.
+
+    A token is composed of up to three parts:
+      - An optional intensity prefix: '-' (light) or '+' (heavy)
+      - An optional descriptor (e.g. 'SH' for shower, 'TS' for thunderstorm)
+      - One or more phenomenon codes (e.g. 'RA' for rain, 'SN' for snow)
+
+    Returns a human-readable string, or None if the token contains no
+    recognisable phenomena.
+    """
     intensity = ''
     if token.startswith('-'):
         intensity = 'light '
@@ -86,6 +115,31 @@ def decode_weather_token(token):
 
 
 def parse_metar(raw):
+    """
+    Parse a raw METAR string into a structured dictionary.
+
+    Handles the following METAR fields in order:
+      - Report type (METAR / SPECI)
+      - Station identifier
+      - Observation timestamp (DDHHMMZ)
+      - AUTO / COR modifier
+      - Wind (direction, speed, optional gust; KT / MPS / KMH)
+      - Variable wind direction range (dddVddd)
+      - CAVOK or visibility (SM / metric)
+      - Runway Visual Range (skipped)
+      - Present weather phenomena
+      - Sky conditions with altitude (FEW / SCT / BKN / OVC / VV)
+      - Temperature and dew point
+      - Altimeter setting (A = inHg, Q = hPa)
+      - Remarks (everything after 'RMK')
+
+    Args:
+        raw: The raw METAR string.
+
+    Returns:
+        A dictionary containing parsed fields. Fields that are not present
+        in the report are set to None (or empty list for weather/sky).
+    """
     raw = raw.strip()
     result = {
         'raw': raw,
@@ -104,7 +158,7 @@ def parse_metar(raw):
         'remarks': None,
     }
 
-    # Split remarks
+    # Remarks follow 'RMK' and are not formally decoded — store as raw text.
     main, _, remarks = raw.partition(' RMK ')
     if remarks:
         result['remarks'] = remarks
@@ -115,27 +169,28 @@ def parse_metar(raw):
 
     idx = 0
 
-    # Skip leading METAR/SPECI type word
+    # Report type word is optional and carries no decoded value.
     if tokens[idx] in ('METAR', 'SPECI'):
         idx += 1
 
-    # Station ID: 3–4 alphanumeric
+    # Station identifier: 3–4 uppercase alphanumeric characters (ICAO code).
     if idx < len(tokens) and re.match(r'^[A-Z0-9]{3,4}$', tokens[idx]):
         result['station'] = tokens[idx]
         idx += 1
 
-    # Timestamp: DDHHMMZ
+    # Timestamp format: DDHHMMZ (day-of-month, hour, minute, UTC).
     if idx < len(tokens) and re.match(r'^\d{6}Z$', tokens[idx]):
         t = tokens[idx]
         result['time'] = {'day': int(t[0:2]), 'hour': int(t[2:4]), 'minute': int(t[4:6])}
         idx += 1
 
-    # AUTO / COR
+    # AUTO indicates a fully automated station with no human observer.
     if idx < len(tokens) and tokens[idx] in ('AUTO', 'COR', 'RTD'):
         result['auto'] = tokens[idx] == 'AUTO'
         idx += 1
 
-    # Wind: (VRB|ddd)(ss)(Ggg)(KT|MPS|KMH)
+    # Wind: format is (VRB|ddd)(ss[s])(Ggg[g])(KT|MPS|KMH).
+    # '00000KT' means calm; 'VRB' means direction is variable.
     if idx < len(tokens):
         wm = re.match(r'^(VRB|\d{3})(\d{2,3})(?:G(\d{2,3}))?(KT|MPS|KMH)$', tokens[idx])
         if wm:
@@ -143,13 +198,14 @@ def parse_metar(raw):
             speed = int(speed_raw)
             gust = int(gust_raw) if gust_raw else None
 
-            def to_mph(knots):
+            def to_mph(val):
+                """Convert wind speed from the reported unit to mph."""
                 if unit == 'KT':
-                    return round(knots * 1.15078)
+                    return round(val * 1.15078)
                 elif unit == 'MPS':
-                    return round(knots * 2.23694)
-                else:
-                    return round(knots * 0.621371)
+                    return round(val * 2.23694)
+                else:  # KMH
+                    return round(val * 0.621371)
 
             speed_mph = to_mph(speed)
             gust_mph = to_mph(gust) if gust else None
@@ -174,42 +230,44 @@ def parse_metar(raw):
                 }
             idx += 1
 
-        # Variable wind range: dddVddd
+        # Variable wind range token (e.g. '280V350') follows the main wind group
+        # when direction varies more than 60° at speeds above 6 knots.
         if idx < len(tokens) and re.match(r'^\d{3}V\d{3}$', tokens[idx]):
             m = re.match(r'^(\d{3})V(\d{3})$', tokens[idx])
             result['wind_variable'] = f"{m.group(1)}° to {m.group(2)}°"
             idx += 1
 
-    # CAVOK
+    # CAVOK (Ceiling And Visibility OK) replaces visibility + sky groups when
+    # visibility ≥ 10 km, no cloud below 5,000 ft, and no significant weather.
     if idx < len(tokens) and tokens[idx] == 'CAVOK':
         result['visibility'] = {'raw': 'CAVOK', 'description': '10+ km — ceiling and visibility OK'}
         result['sky'] = [{'code': 'CAVOK', 'label': 'Clear', 'description': 'no significant clouds below 5,000 ft'}]
         idx += 1
     else:
-        # Visibility
+        # Visibility: US reports use statute miles (SM); international use metres.
         if idx < len(tokens):
             tok = tokens[idx]
-            # Fraction like "1/2SM"
             if re.match(r'^\d+/\d+SM$', tok):
+                # Fractional SM value, e.g. '1/4SM'
                 num, denom = tok.replace('SM', '').split('/')
                 vis = float(num) / float(denom)
                 result['visibility'] = {'miles': vis, 'description': f"{vis:.2f} miles"}
                 idx += 1
-            # Whole number + fraction like "1 1/2SM"
             elif re.match(r'^\d+$', tok) and idx + 1 < len(tokens) and re.match(r'^\d+/\d+SM$', tokens[idx + 1]):
+                # Mixed whole + fraction, e.g. '1 1/2SM'
                 whole = int(tok)
                 num, denom = tokens[idx + 1].replace('SM', '').split('/')
                 vis = whole + float(num) / float(denom)
                 result['visibility'] = {'miles': vis, 'description': f"{vis:.1f} miles"}
                 idx += 2
-            # Standard SM
             elif re.match(r'^\d+SM$', tok):
+                # Whole-number SM value, e.g. '10SM'
                 vis = int(tok.replace('SM', ''))
                 desc = f"{vis}+ miles (excellent)" if vis >= 10 else f"{vis} miles"
                 result['visibility'] = {'miles': vis, 'description': desc}
                 idx += 1
-            # Metric meters (international)
             elif re.match(r'^\d{4}$', tok):
+                # Metric visibility in metres (international format), e.g. '9999'
                 meters = int(tok)
                 km = meters / 1000
                 miles = meters / 1609.34
@@ -217,11 +275,12 @@ def parse_metar(raw):
                 result['visibility'] = {'km': km, 'description': desc}
                 idx += 1
 
-        # RVR lines (skip them)
+        # Runway Visual Range groups (e.g. 'R28L/2400FT') — skip, not decoded.
         while idx < len(tokens) and re.match(r'^R\d{2}[LCR]?/', tokens[idx]):
             idx += 1
 
-        # Weather phenomena
+        # Present weather: optional intensity prefix, optional descriptor, one or
+        # more phenomenon codes. Multiple groups may appear (e.g. '-RA FZFG').
         wx_pat = re.compile(
             r'^(\+|-|VC)?(MI|BC|PR|DR|BL|SH|TS|FZ)?(DZ|RA|SN|SG|IC|PL|GR|GS|UP|BR|FG|FU|VA|DU|SA|HZ|PO|SQ|FC|SS|DS)+$'
         )
@@ -231,7 +290,8 @@ def parse_metar(raw):
                 result['weather'].append(decoded)
             idx += 1
 
-        # Sky conditions
+        # Sky condition groups: coverage code + altitude in hundreds of feet +
+        # optional CB (cumulonimbus) or TCU (towering cumulus) suffix.
         sky_pat = re.compile(r'^(SKC|CLR|NSC|FEW|SCT|BKN|OVC|VV)(\d{3})?(CB|TCU)?$')
         while idx < len(tokens) and sky_pat.match(tokens[idx]):
             m = sky_pat.match(tokens[idx])
@@ -249,7 +309,7 @@ def parse_metar(raw):
             result['sky'].append(entry)
             idx += 1
 
-    # Temperature / Dewpoint
+    # Temperature / dew point: TT/DD in Celsius; 'M' prefix means negative.
     if idx < len(tokens):
         tm = re.match(r'^(M?\d+)/(M?\d+)?$', tokens[idx])
         if tm:
@@ -260,7 +320,7 @@ def parse_metar(raw):
                 result['dewpoint'] = {'celsius': dew_c, 'fahrenheit': c_to_f(dew_c)}
             idx += 1
 
-    # Altimeter
+    # Altimeter: 'A' prefix = inches of mercury (×100); 'Q' prefix = hectopascals.
     if idx < len(tokens):
         am = re.match(r'^(A|Q)(\d{4})$', tokens[idx])
         if am:
@@ -278,6 +338,18 @@ def parse_metar(raw):
 
 
 def build_summary(p):
+    """
+    Build a single plain-English weather summary sentence from parsed METAR data.
+
+    Args:
+        p: The dictionary returned by parse_metar().
+
+    Returns:
+        A human-readable string describing current conditions, e.g.
+        "Clear and mild at 72.5°F (22°C), winds from the West at 8 mph,
+        visibility 10+ miles (excellent)."
+    """
+    # Determine overall sky condition from the worst layer reported.
     sky_codes = [s['code'] for s in p['sky']]
     if 'OVC' in sky_codes or 'VV' in sky_codes:
         sky_word = 'Overcast'
@@ -292,6 +364,7 @@ def build_summary(p):
     else:
         sky_word = None
 
+    # Map temperature to a colloquial feel word.
     temp_word = ''
     if p['temperature']:
         f = p['temperature']['fahrenheit']
@@ -310,7 +383,7 @@ def build_summary(p):
         else:
             temp_word = 'freezing'
 
-    # Opening clause: sky + feel
+    # Opening clause combines sky and feel (e.g. "Clear and mild").
     opening = ''
     if sky_word and temp_word:
         opening = f"{sky_word} and {temp_word}"
@@ -319,26 +392,22 @@ def build_summary(p):
     elif temp_word:
         opening = temp_word.capitalize()
 
-    # Temperature detail
     temp_detail = ''
     if p['temperature']:
         f = p['temperature']['fahrenheit']
         c = p['temperature']['celsius']
         temp_detail = f"{f}°F ({c}°C)"
 
-    # Weather phenomena
     wx_clause = ', '.join(p['weather']) if p['weather'] else ''
 
-    # Wind
     if p['wind']:
         wind_clause = 'winds calm' if p['wind']['calm'] else f"winds {p['wind']['description']}"
     else:
         wind_clause = ''
 
-    # Visibility
     vis_clause = f"visibility {p['visibility']['description']}" if p['visibility'] else ''
 
-    # Assemble into a natural sentence
+    # Assemble clauses into one flowing sentence.
     sentence_parts = []
     if opening and temp_detail:
         sentence_parts.append(f"{opening} at {temp_detail}")
@@ -365,18 +434,31 @@ def build_summary(p):
 
 @app.route('/')
 def index():
+    """Serve the main search page."""
     return render_template('index.html')
 
 
 @app.route('/metar')
 def get_metar():
+    """
+    Fetch and decode a METAR for the given airport code.
+
+    Query parameters:
+        code: ICAO or IATA airport code (3–4 characters).
+              Three-letter US codes (e.g. 'SFO') are automatically retried
+              with a 'K' prefix ('KSFO') if the first request returns no data.
+
+    Returns:
+        JSON with keys: airport, raw, parsed, summary — or an error message.
+    """
     code = request.args.get('code', '').strip().upper()
     if not code:
         return jsonify({'error': 'Please enter an airport code.'}), 400
     if not re.match(r'^[A-Z0-9]{3,4}$', code):
         return jsonify({'error': 'Airport codes are 3–4 letters (e.g. KHIO, SFO, LAX).'}), 400
 
-    # Try the code as-is first; if 3 letters and no data, retry with K prefix (US IATA → ICAO)
+    # Build a list of codes to attempt. US IATA codes (3 letters) are retried
+    # with a 'K' prefix to form the ICAO equivalent (e.g. SFO → KSFO).
     codes_to_try = [code]
     if len(code) == 3 and code.isalpha():
         codes_to_try.append('K' + code)
@@ -401,7 +483,7 @@ def get_metar():
     if not raw:
         return jsonify({'error': f'No METAR data found for {code}. Check the airport code and try again.'}), 404
 
-    # Take the first non-empty line
+    # The API may return multiple lines; take the first non-empty one.
     raw_line = next((ln.strip() for ln in raw.splitlines() if ln.strip()), '')
     if not raw_line:
         return jsonify({'error': f'No METAR data found for {code}.'}), 404

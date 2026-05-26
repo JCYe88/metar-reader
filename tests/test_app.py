@@ -26,7 +26,7 @@ def client():
         yield c
 
 
-def mock_metar_response(metar_string):
+def mock_metar_response(metar_string: str) -> MagicMock:
     """Return a mock requests.Response whose .text is the given METAR string."""
     mock = MagicMock()
     mock.text = metar_string

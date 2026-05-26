@@ -35,11 +35,13 @@ Tests never hit the network — `requests.get` is mocked in all route tests.
 
 ```bash
 source venv/bin/activate
-flake8 app.py tests/   # style + lint (max line length 100)
-mypy app.py tests/     # type checking (strict on app.py; relaxed on tests/)
+black app.py tests/        # auto-format (line length 88)
+black --check app.py tests/ # check without modifying
+flake8 app.py tests/       # lint (E203 suppressed for Black compatibility)
+mypy app.py tests/         # type checking (strict on app.py; relaxed on tests/)
 ```
 
-Config files: `.flake8`, `mypy.ini`.
+Config files: `.flake8`, `mypy.ini`. Black has no config file — its defaults are used.
 
 ## Dependencies
 
